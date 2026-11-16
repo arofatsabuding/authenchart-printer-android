@@ -7,3 +7,5 @@ bin/
 config.json
 config.json.tmp
 .pytest_cache/
+*.keystore
+*.jks

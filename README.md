@@ -50,10 +50,14 @@ buildozer รันบน Windows ตรงๆ ไม่ได้
 
 **ทาง 0 — Docker Desktop (ที่ใช้ build จริงบนเครื่องนี้)**
 ```bash
-docker run --rm -v "C:/Users/User/Desktop/py-print/py-print - android:/src"   -v authenapi-work:/work -v authenapi-home:/root/.buildozer   --entrypoint bash kivy/buildozer:latest /src/.build_docker.sh
+docker run --rm -v "C:/Users/User/Desktop/py-print/py-print - android:/src"   -v "C:/Users/User/Desktop/py-print/android-keystore:/root/.android"   -v authenapi-work:/work -v authenapi-home:/root/.buildozer   --entrypoint bash kivy/buildozer:latest /src/.build_docker.sh
 ```
 ได้ไฟล์ใน `bin/` (รอบแรก ~30–40 นาที รอบถัดไปเร็วขึ้นเพราะ cache อยู่ใน Docker volume)
 สคริปต์ `.build_docker.sh` มี workaround บั๊ก venv ของ python-for-android ไว้แล้ว
+
+> ⚠️ **กุญแจเซ็นแอป** `android-keystore/debug.keystore` (อยู่นอก repo — ห้าม commit) ต้องใช้ดอกเดิมทุกครั้งที่ build
+> ไม่งั้นเครื่องลูกค้าจะติดตั้งทับ/อัปเดตไม่ได้ ("ไม่ได้ติดตั้งแอป") ถ้ากุญแจหาย ลูกค้าทุกเครื่องต้องถอนแอปแล้วติดตั้งใหม่
+> **สำรองไฟล์นี้ไว้หลายที่** (alias `androiddebugkey`, รหัส `android`)
 
 **ทาง A — GitHub Actions (ง่ายสุด)**
 ใช้ `.github/workflows/build-android.yml`

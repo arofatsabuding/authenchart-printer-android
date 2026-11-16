@@ -41,6 +41,18 @@ jobs:
             ${{ env.APP_DIR }}/.buildozer
           key: buildozer-${{ hashFiles(format('{0}/buildozer.spec', env.APP_DIR)) }}
 
+      # ✅ เซ็นด้วยกุญแจเดียวกับที่ใช้ build ในเครื่อง (เก็บเป็น base64 ใน repo secret ANDROID_KEYSTORE_B64)
+      - name: Restore signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::ไม่มี secret ANDROID_KEYSTORE_B64 — APK จะเซ็นด้วยกุญแจสุ่มและติดตั้งทับเวอร์ชันเดิมไม่ได้"
+            exit 1
+          fi
+          mkdir -p ~/.android
+          echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+
       - name: Build APK
         working-directory: ${{ env.APP_DIR }}
         run: yes | buildozer -v android debug

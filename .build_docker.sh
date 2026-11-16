@@ -1,4 +1,11 @@
 set -e
+# ✅ ต้องเซ็นด้วยกุญแจเดิมทุกครั้ง ไม่งั้น Android จะติดตั้งทับ (อัปเดต) ไม่ได้
+# mount โฟลเดอร์กุญแจเข้ามาที่ /root/.android (ดู README หัวข้อ Build APK)
+if [ ! -f /root/.android/debug.keystore ]; then
+  echo "ERROR: ไม่พบ /root/.android/debug.keystore — ต้อง mount โฟลเดอร์ android-keystore เข้ามา" >&2
+  echo '  เช่น -v "C:/Users/User/Desktop/py-print/android-keystore:/root/.android"' >&2
+  exit 1
+fi
 rm -rf /work/app && mkdir -p /work/app
 cd /src && tar --exclude=./bin --exclude=./.buildozer --exclude=./tests --exclude=./__pycache__ -cf - . | tar -xf - -C /work/app
 cd /work/app
