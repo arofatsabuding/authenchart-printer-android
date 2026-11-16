@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+bin/
+.buildozer/
+*.apk
+config.json
+config.json.tmp
+.pytest_cache/
