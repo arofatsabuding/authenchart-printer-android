@@ -15,6 +15,7 @@ DEFAULTS = {
     "printer_name": "",            # usb: "ชื่อ [VID:PID]" | bluetooth: "ชื่อ [MAC]" | network: "ip:port"
     "paper_size": "80",            # "58" | "80"
     "feed_px": 20,
+    "job_gap_sec": 1.0,            # เวลารอระหว่างใบ (วินาที) — เพิ่มถ้าใบที่ 2 มีข้อความขยะ
     "printer_enabled": True,
 }
 

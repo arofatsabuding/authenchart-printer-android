@@ -72,16 +72,15 @@ def test_wait_between_jobs():
     import time
     import printer_transport as pt
     calls = []
-    orig, orig_cut = pt._send_network, pt._CUT_SEC
+    orig = pt._send_network
     pt._send_network = lambda name, data: calls.append(time.monotonic())
-    pt._CUT_SEC = 0.2
     try:
         pt._busy_until = 0.0
-        pt.send_to_printer("network", "x", b"a", print_seconds=0.3)
-        pt.send_to_printer("network", "x", b"b", print_seconds=0.3)
-        assert len(calls) == 2 and calls[1] - calls[0] >= 0.5
+        pt.send_to_printer("network", "x", b"a", gap_sec=0.4)
+        pt.send_to_printer("network", "x", b"b", gap_sec=0.4)
+        assert len(calls) == 2 and 0.4 <= calls[1] - calls[0] < 0.7
     finally:
-        pt._send_network, pt._CUT_SEC, pt._busy_until = orig, orig_cut, 0.0
+        pt._send_network, pt._busy_until = orig, 0.0
 
 
 # ---------------------------------------------------------------- Fake CCID reader + Thai ID card

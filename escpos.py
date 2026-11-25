@@ -12,16 +12,6 @@ from PIL import Image
 _BAND_MAX_BYTES = 4096
 
 
-# ความเร็วพิมพ์ของเครื่องรุ่นช้า (~50 มม./วินาที ที่ 8 จุด/มม.) — ใช้ประมาณเวลาพิมพ์
-SLOW_PRINT_ROWS_PER_SEC = 400
-
-
-def estimate_print_seconds(data: bytes, paper_size="80") -> float:
-    """เวลาที่เครื่องพิมพ์รุ่นช้าใช้พิมพ์ข้อมูลรูปนี้โดยประมาณ"""
-    rows = len(data) / (paper_width_px(paper_size) // 8)
-    return rows / SLOW_PRINT_ROWS_PER_SEC
-
-
 def paper_width_px(paper_size):
     return 384 if str(paper_size) == "58" else 576
 

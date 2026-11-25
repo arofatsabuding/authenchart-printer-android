@@ -200,26 +200,21 @@ def _send_network(printer_name, data):
 
 # ---------------------------------------------------------------- Public
 
-# ✅ เวลาที่เครื่องพิมพ์น่าจะพิมพ์ + ตัดกระดาษงานก่อนหน้าเสร็จ (time.monotonic())
-# ถ้าส่งงานถัดไปเข้าไปตอนเครื่องยังพิมพ์ค้าง/กำลังตัดกระดาษ หลายรุ่นจะทิ้งไบต์ช่วงต้นของงานใหม่
-# -> รูปที่ 2 มีข้อความขยะอยู่ข้างบน จึงต้องรอให้เครื่องว่างก่อน
-_busy_until = 0.0
-_CUT_SEC = 1.0          # เวลาตัดกระดาษ + feed โดยประมาณ
-_MAX_WAIT_SEC = 15.0    # กันรอนานผิดปกติ
+# ✅ ถ้าส่งงานถัดไปเข้าไปตอนเครื่องยังพิมพ์ค้าง/กำลังตัดกระดาษ หลายรุ่นจะทิ้งไบต์ช่วงต้นของงานใหม่
+# -> รูปที่ 2 มีข้อความขยะอยู่ข้างบน จึงต้องเว้นระยะระหว่างงาน (ตั้งได้ที่ "เวลารอระหว่างใบ")
+_busy_until = 0.0       # time.monotonic() ที่งานถัดไปส่งได้
+DEFAULT_JOB_GAP_SEC = 1.0
+_MAX_GAP_SEC = 10.0
 
 
-def send_to_printer(connection_type, printer_name, data: bytes, print_seconds=0.0):
-    """
-    print_seconds = เวลาที่เครื่องพิมพ์ใช้พิมพ์งานนี้โดยประมาณ (นับจากเริ่มส่ง)
-    ใช้คำนวณว่างานถัดไปต้องรอนานเท่าไร
-    """
+def send_to_printer(connection_type, printer_name, data: bytes, gap_sec=DEFAULT_JOB_GAP_SEC):
+    """gap_sec = เวลาที่งานถัดไปต้องรอ นับจากส่งงานนี้เสร็จ (เผื่อเครื่องพิมพ์ส่วนที่ค้าง + ตัดกระดาษ)"""
     global _busy_until
     with _PRINT_LOCK:
-        wait = min(_busy_until - time.monotonic(), _MAX_WAIT_SEC)
+        wait = _busy_until - time.monotonic()
         if wait > 0:
             print(f"⏳ รอเครื่องพิมพ์ทำงานก่อนหน้าเสร็จ {wait:.1f} วินาที")
             time.sleep(wait)
-        start = time.monotonic()
         try:
             if connection_type == CONNECTION_BLUETOOTH:
                 _send_bluetooth(printer_name, data)
@@ -228,7 +223,7 @@ def send_to_printer(connection_type, printer_name, data: bytes, print_seconds=0.
             else:
                 _send_usb(printer_name, data)
         finally:
-            _busy_until = max(start + print_seconds, time.monotonic()) + _CUT_SEC
+            _busy_until = time.monotonic() + max(0.0, min(float(gap_sec), _MAX_GAP_SEC))
 
 
 def list_printers(connection_type):

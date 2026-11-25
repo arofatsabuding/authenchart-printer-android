@@ -47,7 +47,7 @@ import config_store  # noqa: E402
 import printer_transport as pt  # noqa: E402
 from smartcard_reader import ThaiIDCardReader  # noqa: E402
 
-APP_VERSION = "v2.0.3"
+APP_VERSION = "v2.0.4"
 PORT = 9333
 LOCAL_API = f"http://127.0.0.1:{PORT}"
 
@@ -379,6 +379,11 @@ KV = """
             Field:
                 id: feed_input
                 input_filter: 'int'
+            Caption:
+                text: 'เวลารอระหว่างใบ (วินาที) — เพิ่มถ้าใบที่ 2 มีข้อความขยะ:'
+            Field:
+                id: gap_input
+                input_filter: 'float'
             GridLayout:
                 cols: 3
                 size_hint_y: None
@@ -484,6 +489,7 @@ class Settings(BoxLayout):
         self.ids.conn_spinner.text = dict(CONNECTIONS).get(conn, CONNECTIONS[0][1])
         self.ids.paper_spinner.text = str(cfg.get("paper_size", "80"))
         self.ids.feed_input.text = str(cfg.get("feed_px", 20))
+        self.ids.gap_input.text = str(cfg.get("job_gap_sec", pt.DEFAULT_JOB_GAP_SEC))
         self.ids.printer_enabled.active = bool(cfg.get("printer_enabled", True))
         if conn == pt.CONNECTION_NETWORK:
             self.ids.network_input.text = cfg.get("printer_name") or ""
@@ -528,7 +534,7 @@ class Settings(BoxLayout):
         self.ids.read_image_enabled.active = bool(sc_cfg.get("read_image", True))
 
     def on_toggle_printer(self, active):
-        for wid in ("conn_spinner", "printer_spinner", "network_input", "paper_spinner", "feed_input"):
+        for wid in ("conn_spinner", "printer_spinner", "network_input", "paper_spinner", "feed_input", "gap_input"):
             w = self.ids[wid]
             if w.opacity:  # ช่องที่ถูกซ่อนอยู่ให้คง disabled ไว้
                 w.disabled = not active
@@ -579,12 +585,17 @@ class Settings(BoxLayout):
             feed = int(self.ids.feed_input.text or 20)
         except ValueError:
             feed = 20
+        try:
+            gap = max(0.0, min(float(self.ids.gap_input.text or pt.DEFAULT_JOB_GAP_SEC), 10.0))
+        except ValueError:
+            gap = pt.DEFAULT_JOB_GAP_SEC
         return {
             "printer_type": "ESC/POS Thermal",
             "printer_connection": conn,
             "printer_name": name,
             "paper_size": self.ids.paper_spinner.text,
             "feed_px": feed,
+            "job_gap_sec": gap,
             "printer_enabled": self.ids.printer_enabled.active,
         }
 
