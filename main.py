@@ -47,7 +47,7 @@ import config_store  # noqa: E402
 import printer_transport as pt  # noqa: E402
 from smartcard_reader import ThaiIDCardReader  # noqa: E402
 
-APP_VERSION = "v2.0.1"
+APP_VERSION = "v2.0.2"
 PORT = 9333
 LOCAL_API = f"http://127.0.0.1:{PORT}"
 

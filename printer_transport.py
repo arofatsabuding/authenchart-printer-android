@@ -25,6 +25,32 @@ class PrinterError(Exception):
     pass
 
 
+# ✅ จำกัดความเร็วการส่ง (ไบต์/วินาที) ให้ไม่เร็วกว่าที่เครื่องพิมพ์พิมพ์ทัน
+# เครื่องพิมพ์ที่ไม่มี flow control (Bluetooth ราคาถูก / USB ที่ข้างในเป็นชิป USB-Serial)
+# จะทิ้งไบต์ที่ล้นบัฟเฟอร์ -> คำสั่งรูปเพี้ยน -> ข้อมูลรูปที่เหลือถูกพิมพ์เป็นข้อความขยะ
+# (เวอร์ชัน Windows ไม่เจอเพราะส่งผ่านไดรเวอร์ของเครื่องพิมพ์ซึ่งคุมจังหวะให้)
+_RATE = {
+    # (ขนาดก้อน, ไบต์/วินาที)
+    "usb": (4096, 48 * 1024),
+    "bluetooth": (512, 16 * 1024),
+    "network": (4096, 96 * 1024),
+}
+
+
+def _paced_write(write, data, connection_type):
+    """เรียก write(chunk) ทีละก้อน แล้วหน่วงเวลาให้ความเร็วเฉลี่ยไม่เกินที่กำหนด"""
+    chunk_size, rate = _RATE[connection_type]
+    data = bytes(data)
+    start = time.monotonic()
+    for offset in range(0, len(data), chunk_size):
+        chunk = data[offset:offset + chunk_size]
+        write(chunk)
+        sent = offset + len(chunk)
+        wait = start + sent / rate - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+
+
 # ---------------------------------------------------------------- USB
 
 def _find_usb_printer_endpoint(device):
@@ -82,7 +108,8 @@ def _send_usb(printer_name, data):
         if not conn.claimInterface(intf, True):
             raise PrinterError("claim interface เครื่องพิมพ์ USB ไม่สำเร็จ (อาจมีแอปอื่นใช้อยู่)")
         try:
-            au.bulk_transfer_out(conn, ep, data, timeout_ms=10000)
+            _paced_write(lambda chunk: au.bulk_transfer_out(conn, ep, chunk, timeout_ms=10000),
+                         data, CONNECTION_USB)
         finally:
             conn.releaseInterface(intf)
     finally:
@@ -136,10 +163,12 @@ def _send_bluetooth(printer_name, data):
 
     try:
         out = sock.getOutputStream()
-        for i in range(0, len(data), 1024):
-            out.write(data[i:i + 1024])
+
+        def _write(chunk):
+            out.write(chunk)
             out.flush()
-            time.sleep(0.005)
+
+        _paced_write(_write, data, CONNECTION_BLUETOOTH)
         time.sleep(0.5)  # ✅ รอให้ข้อมูลส่งออกหมดก่อนปิด socket (บางรุ่นตัดข้อมูลท้ายทิ้ง)
     finally:
         try:
@@ -164,7 +193,7 @@ def _send_network(printer_name, data):
     host, port = parse_network_address(printer_name)
     try:
         with socket.create_connection((host, port), timeout=10) as s:
-            s.sendall(data)
+            _paced_write(s.sendall, data, CONNECTION_NETWORK)
     except OSError as e:
         raise PrinterError(f"เชื่อมต่อเครื่องพิมพ์ {host}:{port} ไม่สำเร็จ: {e}")
 

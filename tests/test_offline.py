@@ -38,6 +38,35 @@ def test_escpos_raster():
     assert data.endswith(b"\x1B\x64\x02\x1D\x56\x00")     # feed 48px = 2 lines + cut
 
 
+def test_escpos_small_bands():
+    """รูปยาวต้องถูกแบ่งเป็นหลาย GS v 0 ก้อนละ <= 4KB และรวมกันได้ครบทุกแถว"""
+    img = Image.new("L", (576, 1000), 0)
+    data = build_escpos_image(img, "80", 0)
+    pos, total_rows, bands = 2, 0, 0
+    while data[pos:pos + 4] == b"\x1D\x76\x30\x00":
+        xL, xH, yL, yH = data[pos + 4:pos + 8]
+        w, h = xL + xH * 256, yL + yH * 256
+        assert w == 72 and w * h <= 4096
+        assert set(data[pos + 8:pos + 8 + w * h]) == {0xFF}
+        pos += 8 + w * h
+        total_rows += h
+        bands += 1
+    assert total_rows == 1000 and bands > 1
+    assert data[pos:] == b"\x1B\x64\x01\x1D\x56\x00"
+
+
+def test_paced_write():
+    import time
+    import printer_transport as pt
+    pt._RATE["test"] = (100, 1000)       # ก้อนละ 100 ไบต์, 1000 ไบต์/วินาที
+    got = []
+    t0 = time.monotonic()
+    pt._paced_write(got.append, b"x" * 350, "test")
+    elapsed = time.monotonic() - t0
+    assert [len(c) for c in got] == [100, 100, 100, 50]
+    assert 0.3 <= elapsed < 0.6
+
+
 # ---------------------------------------------------------------- Fake CCID reader + Thai ID card
 
 def tis(s):

@@ -6,7 +6,10 @@
 
 from PIL import Image
 
-_BAND_ROWS = 256  # แบ่งภาพเป็นแถบละ 256 แถว กันบัฟเฟอร์เครื่องพิมพ์ล้น (โดยเฉพาะ Bluetooth)
+# ✅ แบ่งภาพเป็นแถบ (band) ละไม่เกิน ~4KB — เครื่องพิมพ์ราคาถูกหลายรุ่นมีบัฟเฟอร์รับข้อมูลเล็ก
+# (บางรุ่น 4-8KB) ถ้าส่ง GS v 0 ก้อนใหญ่ บัฟเฟอร์ล้นแล้วไบต์หาย -> เครื่องอ่านคำสั่งเพี้ยน
+# เอาข้อมูลรูปที่เหลือไปพิมพ์เป็นตัวอักษร (ข้อความขยะ/ภาษาต่างดาวหลังรูป)
+_BAND_MAX_BYTES = 4096
 
 
 def paper_width_px(paper_size):
@@ -39,8 +42,9 @@ def build_escpos_image(img: Image.Image, paper_size="80", feed_px=20) -> bytes:
 
     data = bytearray(b"\x1B\x40")  # Initialize printer
 
-    for y0 in range(0, bw.height, _BAND_ROWS):
-        rows = min(_BAND_ROWS, bw.height - y0)
+    band_rows = max(8, _BAND_MAX_BYTES // width_bytes)
+    for y0 in range(0, bw.height, band_rows):
+        rows = min(band_rows, bw.height - y0)
         data += b"\x1D\x76\x30\x00" + bytes([
             width_bytes % 256, width_bytes // 256, rows % 256, rows // 256
         ])
