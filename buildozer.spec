@@ -12,7 +12,7 @@ source.include_exts = py,png,ttf,txt
 source.exclude_dirs = bin,.buildozer,tests,__pycache__
 source.exclude_patterns = config.json
 
-version = 2.0.2
+version = 2.0.3
 
 # ✅ ไม่ใช้ Flask/requests — HTTP server ใช้ stdlib (http_app.py) เพราะ p4a ติดตั้งได้เฉพาะแพ็กเกจที่มี wheel
 # ✅ ล็อก Python 3.11 — Kivy 2.3.1 ยังคอมไพล์กับ Python 3.14 (ค่าเริ่มต้นของ p4a master) ไม่ได้

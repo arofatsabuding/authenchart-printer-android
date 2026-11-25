@@ -200,14 +200,35 @@ def _send_network(printer_name, data):
 
 # ---------------------------------------------------------------- Public
 
-def send_to_printer(connection_type, printer_name, data: bytes):
+# ✅ เวลาที่เครื่องพิมพ์น่าจะพิมพ์ + ตัดกระดาษงานก่อนหน้าเสร็จ (time.monotonic())
+# ถ้าส่งงานถัดไปเข้าไปตอนเครื่องยังพิมพ์ค้าง/กำลังตัดกระดาษ หลายรุ่นจะทิ้งไบต์ช่วงต้นของงานใหม่
+# -> รูปที่ 2 มีข้อความขยะอยู่ข้างบน จึงต้องรอให้เครื่องว่างก่อน
+_busy_until = 0.0
+_CUT_SEC = 1.0          # เวลาตัดกระดาษ + feed โดยประมาณ
+_MAX_WAIT_SEC = 15.0    # กันรอนานผิดปกติ
+
+
+def send_to_printer(connection_type, printer_name, data: bytes, print_seconds=0.0):
+    """
+    print_seconds = เวลาที่เครื่องพิมพ์ใช้พิมพ์งานนี้โดยประมาณ (นับจากเริ่มส่ง)
+    ใช้คำนวณว่างานถัดไปต้องรอนานเท่าไร
+    """
+    global _busy_until
     with _PRINT_LOCK:
-        if connection_type == CONNECTION_BLUETOOTH:
-            _send_bluetooth(printer_name, data)
-        elif connection_type == CONNECTION_NETWORK:
-            _send_network(printer_name, data)
-        else:
-            _send_usb(printer_name, data)
+        wait = min(_busy_until - time.monotonic(), _MAX_WAIT_SEC)
+        if wait > 0:
+            print(f"⏳ รอเครื่องพิมพ์ทำงานก่อนหน้าเสร็จ {wait:.1f} วินาที")
+            time.sleep(wait)
+        start = time.monotonic()
+        try:
+            if connection_type == CONNECTION_BLUETOOTH:
+                _send_bluetooth(printer_name, data)
+            elif connection_type == CONNECTION_NETWORK:
+                _send_network(printer_name, data)
+            else:
+                _send_usb(printer_name, data)
+        finally:
+            _busy_until = max(start + print_seconds, time.monotonic()) + _CUT_SEC
 
 
 def list_printers(connection_type):

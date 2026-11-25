@@ -14,7 +14,7 @@ from PIL import Image
 
 import config_store
 from http_app import App
-from escpos import build_escpos_image
+from escpos import build_escpos_image, estimate_print_seconds
 from printer_transport import send_to_printer, list_all_printers
 from smartcard_reader import register_smartcard_routes
 
@@ -31,7 +31,7 @@ def print_image(image: Image.Image):
     feed_px = int(cfg.get("feed_px", 20))
     print(f"🖨️ Printing ESC/POS via {connection} to {pname or '(auto)'} | Paper {psize}mm | Feed {feed_px}px")
     data = build_escpos_image(image, psize, feed_px)
-    send_to_printer(connection, pname, data)
+    send_to_printer(connection, pname, data, estimate_print_seconds(data, psize))
 
 
 def create_app():
