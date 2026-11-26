@@ -35,7 +35,8 @@ def print_image(image: Image.Image):
         gap = float(cfg.get("job_gap_sec", DEFAULT_JOB_GAP_SEC))
     except (TypeError, ValueError):
         gap = DEFAULT_JOB_GAP_SEC
-    send_to_printer(connection, pname, data, gap, estimate_print_seconds(data, psize))
+    send_to_printer(connection, pname, data, gap, estimate_print_seconds(data, psize),
+                    wait_done=bool(cfg.get("wait_print_done", True)))
 
 
 def create_app():

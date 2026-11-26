@@ -79,7 +79,7 @@ def test_wait_between_jobs():
         pt._busy_until, pt._status_supported = 0.0, {}
         pt.send_to_printer("network", "a", b"x", gap_sec=0.2, print_seconds=5.0)
         pt.send_to_printer("network", "a", b"x", gap_sec=0.2, print_seconds=5.0)
-        assert 0.2 <= calls[1][0] - calls[0][0] < 0.45
+        assert 0.2 <= calls[1][0] - calls[0][0] < 0.45, calls
         assert calls[0][1] is not None
 
         # 2) เครื่องไม่ตอบ -> รอ print_seconds + ตัดกระดาษ + gap และใบต่อไปไม่ถามสถานะอีก
@@ -93,6 +93,33 @@ def test_wait_between_jobs():
     finally:
         pt._send_network, pt._busy_until, pt._status_supported = orig, 0.0, {}
         pt._FALLBACK_CUT_SEC = 0.7
+
+
+def test_fast_mode():
+    """ปิด 'รอเครื่องพิมพ์พิมพ์เสร็จ': ไม่จำกัดความเร็ว ไม่ถามสถานะ ไม่รอระหว่างใบ (แบบ v2.0.1)"""
+    import time
+    import printer_transport as pt
+    calls, writes = [], []
+    orig = pt._send_network
+
+    def fake(name, data, idle_timeout):
+        calls.append((time.monotonic(), idle_timeout))
+        pt._paced_write(writes.append, data, "network")
+        return False
+
+    pt._send_network = fake
+    try:
+        pt._busy_until, pt._status_supported = 0.0, {}
+        big = b"x" * (500 * 1024)             # โหมดปกติ 96KB/s จะใช้ ~5 วินาที
+        t0 = time.monotonic()
+        pt.send_to_printer("network", "c", big, gap_sec=2.0, print_seconds=5.0, wait_done=False)
+        pt.send_to_printer("network", "c", big, gap_sec=2.0, print_seconds=5.0, wait_done=False)
+        assert time.monotonic() - t0 < 0.5
+        assert calls[0][1] is None and calls[1][1] is None
+        assert b"".join(writes) == big * 2
+    finally:
+        pt._send_network, pt._busy_until, pt._status_supported = orig, 0.0, {}
+        pt._fast_mode = False
 
 
 # ---------------------------------------------------------------- Fake CCID reader + Thai ID card

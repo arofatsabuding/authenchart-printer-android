@@ -47,7 +47,7 @@ import config_store  # noqa: E402
 import printer_transport as pt  # noqa: E402
 from smartcard_reader import ThaiIDCardReader  # noqa: E402
 
-APP_VERSION = "v2.0.5"
+APP_VERSION = "v2.0.6"
 PORT = 9333
 LOCAL_API = f"http://127.0.0.1:{PORT}"
 
@@ -379,8 +379,18 @@ KV = """
             Field:
                 id: feed_input
                 input_filter: 'int'
+            BoxLayout:
+                size_hint_y: None
+                height: dp(58)
+                Caption:
+                    text: 'รอเครื่องพิมพ์พิมพ์เสร็จก่อนส่งใบถัดไป (เปิดถ้าใบที่ 2 มีข้อความขยะ / ปิด = พิมพ์เร็ว)'
+                Switch:
+                    id: wait_done_enabled
+                    size_hint_x: None
+                    width: dp(90)
+                    on_active: root.on_toggle_wait_done(self.active)
             Caption:
-                text: 'เวลารอเพิ่มระหว่างใบ (วินาที) — เพิ่มถ้าใบที่ 2 มีข้อความขยะ:'
+                text: 'เวลารอเพิ่มระหว่างใบ (วินาที) — ใช้ตอนเปิดสวิตช์ด้านบน:'
             Field:
                 id: gap_input
                 input_filter: 'float'
@@ -490,6 +500,7 @@ class Settings(BoxLayout):
         self.ids.paper_spinner.text = str(cfg.get("paper_size", "80"))
         self.ids.feed_input.text = str(cfg.get("feed_px", 20))
         self.ids.gap_input.text = str(cfg.get("job_gap_sec", pt.DEFAULT_JOB_GAP_SEC))
+        self.ids.wait_done_enabled.active = bool(cfg.get("wait_print_done", True))
         self.ids.printer_enabled.active = bool(cfg.get("printer_enabled", True))
         if conn == pt.CONNECTION_NETWORK:
             self.ids.network_input.text = cfg.get("printer_name") or ""
@@ -534,12 +545,18 @@ class Settings(BoxLayout):
         self.ids.read_image_enabled.active = bool(sc_cfg.get("read_image", True))
 
     def on_toggle_printer(self, active):
-        for wid in ("conn_spinner", "printer_spinner", "network_input", "paper_spinner", "feed_input", "gap_input"):
+        for wid in ("conn_spinner", "printer_spinner", "network_input", "paper_spinner", "feed_input", "gap_input",
+                    "wait_done_enabled"):
             w = self.ids[wid]
             if w.opacity:  # ช่องที่ถูกซ่อนอยู่ให้คง disabled ไว้
                 w.disabled = not active
+        self.on_toggle_wait_done(self.ids.wait_done_enabled.active)
         # ✅ disable แค่ปุ่ม "ทดสอบพิมพ์" — ปุ่ม "บันทึก" ต้องกดได้เสมอ ไม่งั้นกลับมาเปิดไม่ได้
         self.ids.test_print_btn.disabled = not active
+
+    def on_toggle_wait_done(self, active):
+        # ช่องเวลารอใช้เฉพาะตอนเปิด "รอเครื่องพิมพ์พิมพ์เสร็จ"
+        self.ids.gap_input.disabled = not (active and self.ids.printer_enabled.active)
 
     # ---------------- USB permission ----------------
 
@@ -596,6 +613,7 @@ class Settings(BoxLayout):
             "paper_size": self.ids.paper_spinner.text,
             "feed_px": feed,
             "job_gap_sec": gap,
+            "wait_print_done": self.ids.wait_done_enabled.active,
             "printer_enabled": self.ids.printer_enabled.active,
         }
 
@@ -735,7 +753,7 @@ class Settings(BoxLayout):
 
 class AuthenAPIApp(App):
     title = f"AuthenAPI ({APP_VERSION})"
-    icon = "logo.png"
+    icon = "app.png"
 
     def build(self):
         Window.clearcolor = (1, 1, 1, 1)

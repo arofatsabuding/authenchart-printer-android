@@ -12,14 +12,14 @@ source.include_exts = py,png,ttf,txt
 source.exclude_dirs = bin,.buildozer,tests,__pycache__
 source.exclude_patterns = config.json
 
-version = 2.0.5
+version = 2.0.6
 
 # ✅ ไม่ใช้ Flask/requests — HTTP server ใช้ stdlib (http_app.py) เพราะ p4a ติดตั้งได้เฉพาะแพ็กเกจที่มี wheel
 # ✅ ล็อก Python 3.11 — Kivy 2.3.1 ยังคอมไพล์กับ Python 3.14 (ค่าเริ่มต้นของ p4a master) ไม่ได้
 requirements = python3==3.11.9,hostpython3==3.11.9,kivy==2.3.1,pyjnius,android,pillow,certifi
 
-icon.filename = %(source.dir)s/logo.png
-presplash.filename = %(source.dir)s/logo.png
+icon.filename = %(source.dir)s/app.png
+presplash.filename = %(source.dir)s/app.png
 
 orientation = portrait
 fullscreen = 0

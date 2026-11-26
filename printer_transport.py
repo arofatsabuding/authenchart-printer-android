@@ -37,10 +37,27 @@ _RATE = {
 }
 
 
+# โหมดเร็ว (ปิด "รอเครื่องพิมพ์พิมพ์เสร็จ") — ส่งแบบ v2.0.1: ไม่จำกัดความเร็ว ไม่รอระหว่างใบ
+# (ขนาดก้อน, หน่วงต่อก้อน วินาที)
+_FAST = {
+    "usb": (16384, 0.0),
+    "bluetooth": (1024, 0.005),
+    "network": (65536, 0.0),
+}
+_fast_mode = False  # ตั้งใน send_to_printer (ภายใต้ _PRINT_LOCK)
+
+
 def _paced_write(write, data, connection_type):
     """เรียก write(chunk) ทีละก้อน แล้วหน่วงเวลาให้ความเร็วเฉลี่ยไม่เกินที่กำหนด"""
-    chunk_size, rate = _RATE[connection_type]
     data = bytes(data)
+    if _fast_mode and connection_type in _FAST:
+        chunk_size, delay = _FAST[connection_type]
+        for offset in range(0, len(data), chunk_size):
+            write(data[offset:offset + chunk_size])
+            if delay:
+                time.sleep(delay)
+        return
+    chunk_size, rate = _RATE[connection_type]
     start = time.monotonic()
     for offset in range(0, len(data), chunk_size):
         chunk = data[offset:offset + chunk_size]
@@ -285,12 +302,14 @@ _FALLBACK_CUT_SEC = 0.7  # เวลาตัดกระดาษโดยป�
 
 
 def send_to_printer(connection_type, printer_name, data: bytes,
-                    gap_sec=DEFAULT_JOB_GAP_SEC, print_seconds=0.0):
+                    gap_sec=DEFAULT_JOB_GAP_SEC, print_seconds=0.0, wait_done=True):
     """
     gap_sec       = เวลารอเพิ่มหลังเครื่องพิมพ์ทำงานเสร็จ ก่อนส่งงานถัดไป
     print_seconds = เวลาพิมพ์งานนี้โดยประมาณ (ใช้กับเครื่องที่ไม่ตอบสถานะ)
+    wait_done     = False -> โหมดเร็วแบบ v2.0.1 (ไม่จำกัดความเร็ว ไม่ถามสถานะ ไม่รอระหว่างใบ)
+                    สำหรับเครื่องพิมพ์ที่ไม่มีปัญหาข้อความขยะ
     """
-    global _busy_until
+    global _busy_until, _fast_mode
     try:
         gap = max(0.0, min(float(gap_sec), _MAX_GAP_SEC))
     except (TypeError, ValueError):
@@ -302,8 +321,9 @@ def send_to_printer(connection_type, printer_name, data: bytes,
             print(f"⏳ รอเครื่องพิมพ์ทำงานก่อนหน้าเสร็จ {wait:.1f} วินาที")
             time.sleep(wait)
         start = time.monotonic()
+        _fast_mode = not wait_done
         # เครื่องที่เคยไม่ตอบ ไม่ต้องถามซ้ำ (ไม่ต้องเสียเวลารอ timeout ทุกใบ)
-        if _status_supported.get(key) is False:
+        if _fast_mode or _status_supported.get(key) is False:
             idle_timeout = None
         else:
             idle_timeout = min(print_seconds + _IDLE_EXTRA_SEC, _MAX_IDLE_WAIT_SEC)
@@ -318,7 +338,9 @@ def send_to_printer(connection_type, printer_name, data: bytes,
         finally:
             if idle_timeout is not None:
                 _status_supported[key] = bool(idle)
-            if idle:
+            if _fast_mode:
+                _busy_until = 0.0
+            elif idle:
                 print(f"✅ เครื่องพิมพ์ทำงานเสร็จใน {time.monotonic() - start:.1f} วินาที")
                 _busy_until = time.monotonic() + gap
             else:
