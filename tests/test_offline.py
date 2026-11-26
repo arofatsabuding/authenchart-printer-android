@@ -68,19 +68,31 @@ def test_paced_write():
 
 
 def test_wait_between_jobs():
-    """งานที่ 2 ต้องรอจนเครื่องพิมพ์งานแรก + ตัดกระดาษเสร็จก่อน"""
+    """เครื่องที่ตอบสถานะ: งานถัดไปรอแค่ gap หลังเครื่องตอบ / เครื่องที่ไม่ตอบ: รอตามเวลาประมาณ"""
     import time
     import printer_transport as pt
     calls = []
     orig = pt._send_network
-    pt._send_network = lambda name, data: calls.append(time.monotonic())
     try:
-        pt._busy_until = 0.0
-        pt.send_to_printer("network", "x", b"a", gap_sec=0.4)
-        pt.send_to_printer("network", "x", b"b", gap_sec=0.4)
-        assert len(calls) == 2 and 0.4 <= calls[1] - calls[0] < 0.7
+        # 1) เครื่องตอบ GS r -> รอแค่ gap
+        pt._send_network = lambda name, data, idle_timeout: calls.append((time.monotonic(), idle_timeout)) or True
+        pt._busy_until, pt._status_supported = 0.0, {}
+        pt.send_to_printer("network", "a", b"x", gap_sec=0.2, print_seconds=5.0)
+        pt.send_to_printer("network", "a", b"x", gap_sec=0.2, print_seconds=5.0)
+        assert 0.2 <= calls[1][0] - calls[0][0] < 0.45
+        assert calls[0][1] is not None
+
+        # 2) เครื่องไม่ตอบ -> รอ print_seconds + ตัดกระดาษ + gap และใบต่อไปไม่ถามสถานะอีก
+        calls.clear()
+        pt._send_network = lambda name, data, idle_timeout: calls.append((time.monotonic(), idle_timeout)) and False
+        pt._FALLBACK_CUT_SEC = 0.1
+        pt.send_to_printer("network", "b", b"x", gap_sec=0.1, print_seconds=0.3)
+        pt.send_to_printer("network", "b", b"x", gap_sec=0.1, print_seconds=0.3)
+        assert 0.5 <= calls[1][0] - calls[0][0] < 0.8
+        assert calls[0][1] is not None and calls[1][1] is None
     finally:
-        pt._send_network, pt._busy_until = orig, 0.0
+        pt._send_network, pt._busy_until, pt._status_supported = orig, 0.0, {}
+        pt._FALLBACK_CUT_SEC = 0.7
 
 
 # ---------------------------------------------------------------- Fake CCID reader + Thai ID card
@@ -384,6 +396,8 @@ def test_http_print_to_network_printer():
             if not chunk:
                 break
             received.extend(chunk)
+            if received.endswith(b"\x1D\x72\x01"):   # GS r 1 -> ตอบสถานะ "มีกระดาษ"
+                conn.sendall(b"\x00")
         conn.close()
 
     t = threading.Thread(target=accept, daemon=True)
@@ -407,7 +421,8 @@ def test_http_print_to_network_printer():
     res = client.post("/print", json={"imageBase64": b64})
     assert res.status_code == 200, res.get_json()
     t.join(5)
-    assert received.startswith(b"\x1B\x40\x1D\x76\x30\x00") and received.endswith(b"\x1D\x56\x00")
+    assert received.startswith(b"\x1B\x40\x1D\x76\x30\x00")
+    assert received.endswith(b"\x1D\x56\x00\x1D\x72\x01")   # ตัดกระดาษ แล้วถามว่าเสร็จหรือยัง
     assert received[6] == 48  # 58mm = 384px = 48 bytes
 
     config_store.save_config({"printer_enabled": False})

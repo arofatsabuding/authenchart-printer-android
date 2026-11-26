@@ -51,6 +51,30 @@ def _paced_write(write, data, connection_type):
             time.sleep(wait)
 
 
+# ✅ ถามเครื่องพิมพ์ว่าพิมพ์ + ตัดกระดาษเสร็จหรือยัง ด้วย GS r 1 (ขอสถานะเซ็นเซอร์กระดาษ)
+# GS r ไม่ใช่คำสั่ง real-time — เครื่องจะตอบหลังทำคำสั่งก่อนหน้า (รูป + ตัดกระดาษ) เสร็จหมดแล้ว
+# ได้คำตอบเมื่อไหร่ = เครื่องว่าง ส่งงานถัดไปได้ทันที ไม่ต้องเดาเวลา
+_STATUS_QUERY = b"\x1D\x72\x01"
+_IDLE_EXTRA_SEC = 3.0       # เผื่อจากเวลาพิมพ์โดยประมาณ ก่อนถือว่าเครื่องไม่ตอบ
+_status_supported = {}      # (connection, printer_name) -> True/False ว่าเครื่องนี้ตอบ GS r ไหม
+
+
+def _wait_printer_idle(write, read_some, timeout_sec):
+    """
+    write(bytes) / read_some(timeout_ms) -> bytes (ว่าง = ไม่มีข้อมูล)
+    คืน True ถ้าเครื่องตอบภายในเวลา (= พิมพ์งานก่อนหน้าเสร็จแล้ว)
+    """
+    for _ in range(20):                     # ทิ้งข้อมูลเก่าที่ค้างอยู่ (เช่นสถานะที่เครื่องส่งเอง)
+        if not read_some(30):
+            break
+    write(_STATUS_QUERY)
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if read_some(200):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------- USB
 
 def _find_usb_printer_endpoint(device):
@@ -94,7 +118,14 @@ def _find_usb_device(printer_name):
     raise PrinterError("ไม่พบเครื่องพิมพ์ USB ที่เชื่อมต่ออยู่")
 
 
-def _send_usb(printer_name, data):
+def _find_bulk_in(intf):
+    for ep in au.iter_endpoints(intf):
+        if ep.getType() == au.USB_ENDPOINT_XFER_BULK and ep.getDirection() == au.USB_DIR_IN:
+            return ep
+    return None
+
+
+def _send_usb(printer_name, data, idle_timeout=None):
     device = _find_usb_device(printer_name)
     if not au.has_usb_permission(device):
         au.request_usb_permission(device)
@@ -108,8 +139,20 @@ def _send_usb(printer_name, data):
         if not conn.claimInterface(intf, True):
             raise PrinterError("claim interface เครื่องพิมพ์ USB ไม่สำเร็จ (อาจมีแอปอื่นใช้อยู่)")
         try:
-            _paced_write(lambda chunk: au.bulk_transfer_out(conn, ep, chunk, timeout_ms=10000),
-                         data, CONNECTION_USB)
+            def write(chunk):
+                au.bulk_transfer_out(conn, ep, chunk, timeout_ms=10000)
+
+            _paced_write(write, data, CONNECTION_USB)
+            ep_in = _find_bulk_in(intf)
+            if idle_timeout is None or ep_in is None:
+                return False
+            is_ftdi = device.getVendorId() == 0x0403  # ชิป FTDI ส่งสถานะ 2 ไบต์นำหน้าทุก packet
+
+            def read_some(timeout_ms):
+                got = au.bulk_transfer_in(conn, ep_in, 64, timeout_ms=timeout_ms) or b""
+                return got[2:] if is_ftdi else got
+
+            return _wait_printer_idle(write, read_some, idle_timeout)
         finally:
             conn.releaseInterface(intf)
     finally:
@@ -122,7 +165,7 @@ def list_bluetooth_printers():
     return au.list_bonded_bluetooth_devices()
 
 
-def _send_bluetooth(printer_name, data):
+def _send_bluetooth(printer_name, data, idle_timeout=None):
     from jnius import autoclass
     m = _BT_MAC_RE.search(printer_name or "")
     if not m:
@@ -169,7 +212,26 @@ def _send_bluetooth(printer_name, data):
             out.flush()
 
         _paced_write(_write, data, CONNECTION_BLUETOOTH)
+        if idle_timeout is not None:
+            inp = sock.getInputStream()
+
+            def read_some(timeout_ms):
+                end = time.monotonic() + timeout_ms / 1000.0
+                while True:
+                    n = inp.available()
+                    if n > 0:
+                        return bytes((inp.read() & 0xFF) for _ in range(n))
+                    if time.monotonic() >= end:
+                        return b""
+                    time.sleep(0.02)
+
+            try:
+                if _wait_printer_idle(_write, read_some, idle_timeout):
+                    return True
+            except Exception as e:
+                print("⚠️ ถามสถานะเครื่องพิมพ์ Bluetooth ไม่สำเร็จ:", e)
         time.sleep(0.5)  # ✅ รอให้ข้อมูลส่งออกหมดก่อนปิด socket (บางรุ่นตัดข้อมูลท้ายทิ้ง)
+        return False
     finally:
         try:
             sock.close()
@@ -189,11 +251,22 @@ def parse_network_address(printer_name):
     return host, int(port)
 
 
-def _send_network(printer_name, data):
+def _send_network(printer_name, data, idle_timeout=None):
     host, port = parse_network_address(printer_name)
     try:
         with socket.create_connection((host, port), timeout=10) as s:
             _paced_write(s.sendall, data, CONNECTION_NETWORK)
+            if idle_timeout is None:
+                return False
+
+            def read_some(timeout_ms):
+                s.settimeout(timeout_ms / 1000.0)
+                try:
+                    return s.recv(64)
+                except socket.timeout:
+                    return b""
+
+            return _wait_printer_idle(s.sendall, read_some, idle_timeout)
     except OSError as e:
         raise PrinterError(f"เชื่อมต่อเครื่องพิมพ์ {host}:{port} ไม่สำเร็จ: {e}")
 
@@ -201,29 +274,55 @@ def _send_network(printer_name, data):
 # ---------------------------------------------------------------- Public
 
 # ✅ ถ้าส่งงานถัดไปเข้าไปตอนเครื่องยังพิมพ์ค้าง/กำลังตัดกระดาษ หลายรุ่นจะทิ้งไบต์ช่วงต้นของงานใหม่
-# -> รูปที่ 2 มีข้อความขยะอยู่ข้างบน จึงต้องเว้นระยะระหว่างงาน (ตั้งได้ที่ "เวลารอระหว่างใบ")
+# -> รูปที่ 2 มีข้อความขยะทับอยู่ข้างบน จึงต้องรอให้เครื่องว่างก่อนส่งงานถัดไป:
+#   1) เครื่องที่ตอบ GS r ได้  -> รอจนเครื่องตอบ (= เสร็จจริง) + gap_sec
+#   2) เครื่องที่ไม่ตอบ        -> รอตามเวลาพิมพ์โดยประมาณ (print_seconds) + gap_sec
 _busy_until = 0.0       # time.monotonic() ที่งานถัดไปส่งได้
-DEFAULT_JOB_GAP_SEC = 1.0
+DEFAULT_JOB_GAP_SEC = 0.3
 _MAX_GAP_SEC = 10.0
+_MAX_IDLE_WAIT_SEC = 20.0
+_FALLBACK_CUT_SEC = 0.7  # เวลาตัดกระดาษโดยประมาณ (ใช้กับเครื่องที่ไม่ตอบสถานะ)
 
 
-def send_to_printer(connection_type, printer_name, data: bytes, gap_sec=DEFAULT_JOB_GAP_SEC):
-    """gap_sec = เวลาที่งานถัดไปต้องรอ นับจากส่งงานนี้เสร็จ (เผื่อเครื่องพิมพ์ส่วนที่ค้าง + ตัดกระดาษ)"""
+def send_to_printer(connection_type, printer_name, data: bytes,
+                    gap_sec=DEFAULT_JOB_GAP_SEC, print_seconds=0.0):
+    """
+    gap_sec       = เวลารอเพิ่มหลังเครื่องพิมพ์ทำงานเสร็จ ก่อนส่งงานถัดไป
+    print_seconds = เวลาพิมพ์งานนี้โดยประมาณ (ใช้กับเครื่องที่ไม่ตอบสถานะ)
+    """
     global _busy_until
+    try:
+        gap = max(0.0, min(float(gap_sec), _MAX_GAP_SEC))
+    except (TypeError, ValueError):
+        gap = DEFAULT_JOB_GAP_SEC
+    key = (connection_type, printer_name)
     with _PRINT_LOCK:
         wait = _busy_until - time.monotonic()
         if wait > 0:
             print(f"⏳ รอเครื่องพิมพ์ทำงานก่อนหน้าเสร็จ {wait:.1f} วินาที")
             time.sleep(wait)
+        start = time.monotonic()
+        # เครื่องที่เคยไม่ตอบ ไม่ต้องถามซ้ำ (ไม่ต้องเสียเวลารอ timeout ทุกใบ)
+        if _status_supported.get(key) is False:
+            idle_timeout = None
+        else:
+            idle_timeout = min(print_seconds + _IDLE_EXTRA_SEC, _MAX_IDLE_WAIT_SEC)
+        idle = False
         try:
             if connection_type == CONNECTION_BLUETOOTH:
-                _send_bluetooth(printer_name, data)
+                idle = _send_bluetooth(printer_name, data, idle_timeout)
             elif connection_type == CONNECTION_NETWORK:
-                _send_network(printer_name, data)
+                idle = _send_network(printer_name, data, idle_timeout)
             else:
-                _send_usb(printer_name, data)
+                idle = _send_usb(printer_name, data, idle_timeout)
         finally:
-            _busy_until = time.monotonic() + max(0.0, min(float(gap_sec), _MAX_GAP_SEC))
+            if idle_timeout is not None:
+                _status_supported[key] = bool(idle)
+            if idle:
+                print(f"✅ เครื่องพิมพ์ทำงานเสร็จใน {time.monotonic() - start:.1f} วินาที")
+                _busy_until = time.monotonic() + gap
+            else:
+                _busy_until = max(start + print_seconds, time.monotonic()) + _FALLBACK_CUT_SEC + gap
 
 
 def list_printers(connection_type):

@@ -47,7 +47,7 @@ import config_store  # noqa: E402
 import printer_transport as pt  # noqa: E402
 from smartcard_reader import ThaiIDCardReader  # noqa: E402
 
-APP_VERSION = "v2.0.4"
+APP_VERSION = "v2.0.5"
 PORT = 9333
 LOCAL_API = f"http://127.0.0.1:{PORT}"
 
@@ -380,7 +380,7 @@ KV = """
                 id: feed_input
                 input_filter: 'int'
             Caption:
-                text: 'เวลารอระหว่างใบ (วินาที) — เพิ่มถ้าใบที่ 2 มีข้อความขยะ:'
+                text: 'เวลารอเพิ่มระหว่างใบ (วินาที) — เพิ่มถ้าใบที่ 2 มีข้อความขยะ:'
             Field:
                 id: gap_input
                 input_filter: 'float'

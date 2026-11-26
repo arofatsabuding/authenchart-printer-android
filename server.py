@@ -14,7 +14,7 @@ from PIL import Image
 
 import config_store
 from http_app import App
-from escpos import build_escpos_image
+from escpos import build_escpos_image, estimate_print_seconds
 from printer_transport import send_to_printer, list_all_printers, DEFAULT_JOB_GAP_SEC
 from smartcard_reader import register_smartcard_routes
 
@@ -35,7 +35,7 @@ def print_image(image: Image.Image):
         gap = float(cfg.get("job_gap_sec", DEFAULT_JOB_GAP_SEC))
     except (TypeError, ValueError):
         gap = DEFAULT_JOB_GAP_SEC
-    send_to_printer(connection, pname, data, gap)
+    send_to_printer(connection, pname, data, gap, estimate_print_seconds(data, psize))
 
 
 def create_app():
