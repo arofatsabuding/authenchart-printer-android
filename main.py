@@ -47,7 +47,7 @@ import config_store  # noqa: E402
 import printer_transport as pt  # noqa: E402
 from smartcard_reader import ThaiIDCardReader  # noqa: E402
 
-APP_VERSION = "v2.0.6"
+APP_VERSION = "v2.0.7"
 PORT = 9333
 LOCAL_API = f"http://127.0.0.1:{PORT}"
 
@@ -647,7 +647,8 @@ class Settings(BoxLayout):
 
         buf = io.BytesIO()
         img.save(buf, format="PNG")
-        payload = {"imageBase64": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()}
+        payload = {"imageBase64": "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(),
+                   "wait": True}  # รอผลพิมพ์จริง จะได้บอกได้ว่าสำเร็จไหม
         try:
             status, data = http_json("POST", f"{LOCAL_API}/print", payload, timeout=30)
             if status == 200:

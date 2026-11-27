@@ -142,38 +142,72 @@ def _find_bulk_in(intf):
     return None
 
 
-def _send_usb(printer_name, data, idle_timeout=None):
+# ✅ เปิดการเชื่อมต่อ USB ค้างไว้ ใช้ซ้ำทุกใบ (เหมือนไดรเวอร์ของ Windows ที่ถือเครื่องพิมพ์ไว้ตลอด)
+# เดิมเปิด -> claim -> ส่ง -> release -> ปิด ทุกใบ: การปิดทำให้ Android พักพอร์ต USB (autosuspend)
+# และการ claim ใหม่ทำให้สถานะ USB ของเครื่องพิมพ์บางรุ่นไม่ตรงกับฝั่งมือถือ -> เครื่องทิ้ง packet แรก
+# ของงานถัดไป (คำสั่ง ESC @ + หัว GS v 0) -> ข้อมูลรูปแถบแรกถูกพิมพ์เป็นตัวอักษร = ข้อความขยะ
+# ทับหัวใบที่ 2 แล้วรูปที่เหลือค่อยกลับมาปกติเมื่อเจอหัวแถบถัดไป — ใบแรกหลังเปิดเครื่องจึงไม่เป็น
+_usb = {"key": None, "conn": None, "intf": None, "ep": None, "ep_in": None, "ftdi": False}
+
+
+def _usb_close():
+    conn = _usb.get("conn")
+    if conn is not None:
+        try:
+            conn.releaseInterface(_usb["intf"])
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+    _usb.update(key=None, conn=None, intf=None, ep=None, ep_in=None, ftdi=False)
+
+
+def _usb_open(printer_name):
     device = _find_usb_device(printer_name)
+    # deviceName (/dev/bus/usb/xxx/yyy) เปลี่ยนเมื่อถอด/เสียบใหม่ -> ต้องเปิดใหม่
+    key = (device.getDeviceName(), device.getVendorId(), device.getProductId())
+    if _usb["conn"] is not None and _usb["key"] == key:
+        return _usb
+    _usb_close()
     if not au.has_usb_permission(device):
         au.request_usb_permission(device)
         raise PrinterError("ยังไม่ได้รับอนุญาตให้ใช้เครื่องพิมพ์ USB — กด 'อนุญาต' ในหน้าต่างที่เด้งขึ้น แล้วสั่งพิมพ์ใหม่")
-
     intf, ep = _find_usb_printer_endpoint(device)
     conn = au.get_usb_manager().openDevice(device)
     if conn is None:
         raise PrinterError("เปิดการเชื่อมต่อเครื่องพิมพ์ USB ไม่สำเร็จ")
-    try:
-        if not conn.claimInterface(intf, True):
-            raise PrinterError("claim interface เครื่องพิมพ์ USB ไม่สำเร็จ (อาจมีแอปอื่นใช้อยู่)")
-        try:
-            def write(chunk):
-                au.bulk_transfer_out(conn, ep, chunk, timeout_ms=10000)
-
-            _paced_write(write, data, CONNECTION_USB)
-            ep_in = _find_bulk_in(intf)
-            if idle_timeout is None or ep_in is None:
-                return False
-            is_ftdi = device.getVendorId() == 0x0403  # ชิป FTDI ส่งสถานะ 2 ไบต์นำหน้าทุก packet
-
-            def read_some(timeout_ms):
-                got = au.bulk_transfer_in(conn, ep_in, 64, timeout_ms=timeout_ms) or b""
-                return got[2:] if is_ftdi else got
-
-            return _wait_printer_idle(write, read_some, idle_timeout)
-        finally:
-            conn.releaseInterface(intf)
-    finally:
+    if not conn.claimInterface(intf, True):
         conn.close()
+        raise PrinterError("claim interface เครื่องพิมพ์ USB ไม่สำเร็จ (อาจมีแอปอื่นใช้อยู่)")
+    _usb.update(key=key, conn=conn, intf=intf, ep=ep, ep_in=_find_bulk_in(intf),
+                ftdi=device.getVendorId() == 0x0403)  # ชิป FTDI ส่งสถานะ 2 ไบต์นำหน้าทุก packet
+    print(f"🔌 เปิดการเชื่อมต่อเครื่องพิมพ์ USB {device.getVendorId():04X}:{device.getProductId():04X}")
+    return _usb
+
+
+def _send_usb(printer_name, data, idle_timeout=None):
+    u = _usb_open(printer_name)
+    conn, ep, ep_in = u["conn"], u["ep"], u["ep_in"]
+
+    def write(chunk):
+        au.bulk_transfer_out(conn, ep, chunk, timeout_ms=10000)
+
+    try:
+        _paced_write(write, data, CONNECTION_USB)
+        if idle_timeout is None or ep_in is None:
+            return False
+        is_ftdi = u["ftdi"]
+
+        def read_some(timeout_ms):
+            got = au.bulk_transfer_in(conn, ep_in, 64, timeout_ms=timeout_ms) or b""
+            return got[2:] if is_ftdi else got
+
+        return _wait_printer_idle(write, read_some, idle_timeout)
+    except Exception:
+        _usb_close()   # สายหลุด / เครื่องปิด -> ใบถัดไปเปิดการเชื่อมต่อใหม่
+        raise
 
 
 # ---------------------------------------------------------------- Bluetooth
@@ -299,6 +333,7 @@ DEFAULT_JOB_GAP_SEC = 0.3
 _MAX_GAP_SEC = 10.0
 _MAX_IDLE_WAIT_SEC = 20.0
 _FALLBACK_CUT_SEC = 0.7  # เวลาตัดกระดาษโดยประมาณ (ใช้กับเครื่องที่ไม่ตอบสถานะ)
+_JOB_PREAMBLE = b"\x00" * 512   # >= ขนาด packet USB ใหญ่สุด (high-speed 512 ไบต์)
 
 
 def send_to_printer(connection_type, printer_name, data: bytes,
@@ -315,6 +350,10 @@ def send_to_printer(connection_type, printer_name, data: bytes,
     except (TypeError, ValueError):
         gap = DEFAULT_JOB_GAP_SEC
     key = (connection_type, printer_name)
+    # ✅ เติม NUL นำหน้าทุกงาน: ถ้าเครื่องพิมพ์ทิ้งไบต์ช่วงต้นของงาน (packet แรกหลังเชื่อมต่อ /
+    # Bluetooth ที่ทิ้งไบต์แรกหลัง connect) จะเสียแค่ NUL ซึ่งเครื่องไม่พิมพ์อะไร แทนที่จะเสียหัวคำสั่งรูป
+    # และถ้ามีคำสั่งค้างครึ่ง ๆ จากงานก่อน NUL จะเติมพารามิเตอร์ให้จบไป ไม่กินหัวคำสั่งของงานนี้
+    data = _JOB_PREAMBLE + bytes(data)
     with _PRINT_LOCK:
         wait = _busy_until - time.monotonic()
         if wait > 0:

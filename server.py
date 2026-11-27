@@ -2,13 +2,16 @@
 # ==============================================================
 # HTTP backend (พอร์ต 9333) — endpoint เดียวกับ main.py ของเวอร์ชัน Windows
 #   GET  /ping
-#   POST /print                     {"imageBase64": "data:image/png;base64,..."}
+#   POST /print                     {"imageBase64": "data:image/png;base64,..."}  (เข้าคิว ตอบทันที)
+#                                   {"imageBase64": ..., "wait": true}           (รอพิมพ์เสร็จแล้วค่อยตอบ)
 #   GET  /printers
 #   /api/smartcard/...              (ดู smartcard_reader.py)
 # ==============================================================
 
 import base64
 import io
+import queue
+import threading
 
 from PIL import Image
 
@@ -39,6 +42,37 @@ def print_image(image: Image.Image):
                     wait_done=bool(cfg.get("wait_print_done", True)))
 
 
+# ✅ คิวงานพิมพ์: /print รับรูปแล้วตอบหน้าเว็บทันที แล้วค่อยพิมพ์ทีละใบตามลำดับเบื้องหลัง
+# หน้าเว็บ (printImage) ตั้ง timeout ไว้ 2 วินาที แต่การส่งรูปเข้าเครื่องพิมพ์ + รอพิมพ์เสร็จใช้นานกว่านั้น
+# เดิมหน้าเว็บจึงหมดเวลา -> ถือว่าพิมพ์ไม่ได้ -> ส่งรูปเดิมซ้ำไปที่ fallback (8189) แล้วส่งใบถัดไปทันที
+# ระหว่างที่ใบแรกยังส่งไม่เสร็จ — แบบเดียวกับ Windows ที่ spooler รับงานแล้วตอบทันที
+_jobs = queue.Queue()
+_worker_lock = threading.Lock()
+_worker_started = False
+
+
+def _print_worker():
+    while True:
+        image = _jobs.get()
+        try:
+            print_image(image)
+        except Exception as e:
+            print("❌ Print job failed:", e)
+        finally:
+            _jobs.task_done()
+
+
+def enqueue_print(image: Image.Image) -> int:
+    """เข้าคิวพิมพ์ คืนจำนวนงานที่รออยู่ (รวมงานนี้)"""
+    global _worker_started
+    with _worker_lock:
+        if not _worker_started:
+            threading.Thread(target=_print_worker, name="print-worker", daemon=True).start()
+            _worker_started = True
+    _jobs.put(image)
+    return _jobs.qsize()
+
+
 def create_app():
     app = App()  # CORS + Private Network Access จัดการใน http_app.py แล้ว
 
@@ -58,8 +92,16 @@ def create_app():
 
             base64_image = base64_image.split(",")[-1]
             image = Image.open(io.BytesIO(base64.b64decode(base64_image)))
-            print_image(image)
-            return {"message": "✅ พิมพ์สำเร็จ"}, 200
+            image.load()  # ถอดรหัสรูปตอนนี้เลย รูปเสียจะได้แจ้ง error กลับไปทันที
+            if data.get("wait"):
+                # รอพิมพ์จริงแล้วค่อยตอบ (ปุ่มทดสอบพิมพ์ในแอปใช้ — อยากรู้ผลว่าพิมพ์ได้ไหม)
+                _jobs.join()
+                print_image(image)
+                return {"message": "✅ พิมพ์สำเร็จ"}, 200
+            if not config_store.load_config().get("printer_enabled", True):
+                raise RuntimeError("เครื่องพิมพ์ถูกปิดใช้งานอยู่ กรุณาเปิดใช้งานที่หน้าตั้งค่าก่อนพิมพ์")
+            pending = enqueue_print(image)
+            return {"message": "✅ พิมพ์สำเร็จ", "queued": pending}, 200
         except Exception as e:
             print("❌ Error:", e)
             return {"error": str(e)}, 500

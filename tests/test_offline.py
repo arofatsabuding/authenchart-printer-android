@@ -116,7 +116,7 @@ def test_fast_mode():
         pt.send_to_printer("network", "c", big, gap_sec=2.0, print_seconds=5.0, wait_done=False)
         assert time.monotonic() - t0 < 0.5
         assert calls[0][1] is None and calls[1][1] is None
-        assert b"".join(writes) == big * 2
+        assert b"".join(writes) == (pt._JOB_PREAMBLE + big) * 2
     finally:
         pt._send_network, pt._busy_until, pt._status_supported = orig, 0.0, {}
         pt._fast_mode = False
@@ -448,9 +448,10 @@ def test_http_print_to_network_printer():
     res = client.post("/print", json={"imageBase64": b64})
     assert res.status_code == 200, res.get_json()
     t.join(5)
-    assert received.startswith(b"\x1B\x40\x1D\x76\x30\x00")
+    # NUL 512 ไบต์นำหน้า แล้วค่อยเป็นงานพิมพ์ (ESC @ + GS v 0)
+    assert received.startswith(b"\x00" * 512 + b"\x1B\x40\x1D\x76\x30\x00")
     assert received.endswith(b"\x1D\x56\x00\x1D\x72\x01")   # ตัดกระดาษ แล้วถามว่าเสร็จหรือยัง
-    assert received[6] == 48  # 58mm = 384px = 48 bytes
+    assert received[512 + 6] == 48  # 58mm = 384px = 48 bytes
 
     config_store.save_config({"printer_enabled": False})
     res = client.post("/print", json={"imageBase64": b64})
@@ -465,6 +466,123 @@ def test_http_print_to_network_printer():
     assert res.headers.get("Access-Control-Allow-Private-Network") == "true"
     assert "POST" in res.headers.get("Access-Control-Allow-Methods")
     httpd.shutdown()
+
+
+def test_print_queue_answers_fast():
+    """/print ตอบทันที (หน้าเว็บตั้ง timeout 2 วินาที) แล้วพิมพ์ทีละใบตามลำดับเบื้องหลัง"""
+    import time
+    import printer_transport as pt
+    import server
+    jobs = []
+    orig = pt._send_network
+
+    def slow(name, data, idle_timeout):
+        time.sleep(1.5)                     # จำลองเครื่องพิมพ์ช้า: ส่ง + พิมพ์ใบละ 1.5 วินาที
+        jobs.append(data)
+        return True
+
+    config_store.save_config({"printer_connection": "network", "printer_name": "127.0.0.1:1",
+                              "paper_size": "80", "printer_enabled": True, "job_gap_sec": 0})
+    pt._send_network, pt._busy_until, pt._status_supported = slow, 0.0, {}
+    httpd = server.create_app().make_server("127.0.0.1", 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    client = _Client(f"http://127.0.0.1:{httpd.server_address[1]}")
+    try:
+        imgs = []
+        for h in (300, 100, 50):            # ใบหลัก / ใบคิว / การ์ด — สูงต่างกัน แยกออกได้
+            buf = io.BytesIO()
+            Image.new("RGB", (576, h), "white").save(buf, format="PNG")
+            imgs.append("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode())
+        t0 = time.monotonic()
+        for b64 in imgs:
+            res = client.post("/print", json={"imageBase64": b64})
+            assert res.status_code == 200, res.get_json()
+        assert time.monotonic() - t0 < 1.0          # ตอบทั้ง 3 ใบในไม่ถึงวินาที
+        server._jobs.join()
+        sizes = [len(d) for d in jobs]
+        assert len(jobs) == 3 and sizes[0] > sizes[1] > sizes[2], sizes   # ครบ ตามลำดับที่ส่งมา
+
+        res = client.post("/print", json={"imageBase64": "data:image/png;base64,bm90YW5pbWFnZQ=="})
+        assert res.status_code == 500                 # รูปเสีย -> แจ้ง error ทันที
+
+        t0 = time.monotonic()                          # wait=true (ปุ่มทดสอบพิมพ์) -> รอพิมพ์จริง
+        res = client.post("/print", json={"imageBase64": imgs[2], "wait": True})
+        assert res.status_code == 200 and time.monotonic() - t0 >= 1.4
+    finally:
+        httpd.shutdown()
+        pt._send_network, pt._busy_until, pt._status_supported = orig, 0.0, {}
+
+
+def test_usb_connection_kept_open():
+    """USB: เปิด/claim ครั้งเดียวแล้วใช้ซ้ำทุกใบ (ไม่ปิด-เปิดใหม่ระหว่างใบ) และเปิดใหม่เมื่อสายหลุด"""
+    import printer_transport as pt
+
+    class Ep:
+        def __init__(self, d): self.d = d
+        def getType(self): return au.USB_ENDPOINT_XFER_BULK
+        def getDirection(self): return self.d
+
+    class Intf:
+        def getInterfaceClass(self): return au.USB_CLASS_PRINTER
+
+    class Dev:
+        def __init__(self, name): self.name = name
+        def getDeviceName(self): return self.name
+        def getVendorId(self): return 0x0416
+        def getProductId(self): return 0x5011
+
+    log, sent, fail = [], [], {"on": False}
+
+    class Conn:
+        def claimInterface(self, i, force): log.append("claim"); return True
+        def releaseInterface(self, i): log.append("release")
+        def close(self): log.append("close")
+
+    class Mgr:
+        def openDevice(self, d): log.append("open"); return Conn()
+
+    dev = {"d": Dev("/dev/bus/usb/001/002")}
+
+    def out(conn, ep, data, timeout_ms=0):
+        if fail["on"]:
+            raise IOError("unplugged")
+        sent.append(bytes(data))
+
+    names = ("iter_interfaces", "iter_endpoints", "has_usb_permission", "get_usb_manager",
+             "bulk_transfer_out", "list_usb_devices", "usb_device_label")
+    saved = {k: getattr(au, k, None) for k in names}
+    au.iter_interfaces = lambda d: [Intf()]
+    au.iter_endpoints = lambda i: [Ep(au.USB_DIR_OUT)]       # ไม่มี bulk IN -> ไม่ถามสถานะ
+    au.has_usb_permission = lambda d: True
+    au.get_usb_manager = lambda: Mgr()
+    au.bulk_transfer_out = out
+    au.list_usb_devices = lambda: [dev["d"]]
+    au.usb_device_label = lambda d: "POS-80 [0416:5011]"
+    pt._usb_close()
+    pt._busy_until = 0.0
+    name = "POS-80 [0416:5011]"
+    try:
+        for _ in range(3):
+            pt.send_to_printer("usb", name, b"\x1B\x40JOB", 0.0, 0.0, wait_done=False)
+        assert log == ["open", "claim"], log                 # 3 ใบ เปิดการเชื่อมต่อครั้งเดียว
+        assert b"".join(sent) == (b"\x00" * 512 + b"\x1B\x40JOB") * 3
+
+        fail["on"] = True                                    # สายหลุดกลางงาน -> ปิด แล้วแจ้ง error
+        try:
+            pt.send_to_printer("usb", name, b"X", 0.0, 0.0, wait_done=False)
+            raise AssertionError("ต้อง error")
+        except IOError:
+            pass
+        assert log[-2:] == ["release", "close"] and pt._usb["conn"] is None
+        fail["on"] = False
+        dev["d"] = Dev("/dev/bus/usb/001/003")               # เสียบใหม่ -> เปิดใหม่ได้
+        pt.send_to_printer("usb", name, b"Y", 0.0, 0.0, wait_done=False)
+        assert log[-2:] == ["open", "claim"]
+    finally:
+        pt._usb_close()
+        pt._fast_mode = False
+        for k, v in saved.items():
+            setattr(au, k, v)
 
 
 if __name__ == "__main__":
